@@ -842,6 +842,29 @@ const showLogDetailsModal = item => {
 			}, _('Close'))
 		])
 	]);
+	setTimeout(() => {
+		if (window._mosdnsOutsideHandler) {
+			document.removeEventListener('click', window._mosdnsOutsideHandler, true);
+		}
+		const handleOutsideClick = (ev) => {
+			const isClickInsideModal = ev.target.closest('.modal[role="dialog"]');
+			if (!isClickInsideModal) {
+				ui.hideModal();
+			}
+		};
+		window._mosdnsOutsideHandler = handleOutsideClick;
+		document.addEventListener('click', handleOutsideClick, true);
+		if (!window._mosdnsOriginalHideModal) {
+			window._mosdnsOriginalHideModal = ui.hideModal;
+			ui.hideModal = function() {
+				if (window._mosdnsOutsideHandler) {
+					document.removeEventListener('click', window._mosdnsOutsideHandler, true);
+					window._mosdnsOutsideHandler = null;
+				}
+				return window._mosdnsOriginalHideModal.apply(this, arguments);
+			};
+		}
+	}, 50);
 };
 
 const renderLogsTable = logsData => {
@@ -869,7 +892,10 @@ const renderLogsTable = logsData => {
 		return E('tr', {
 			class: 'tr mosdns-log-row',
 			title: _('Click to view full details'),
-			click: () => showLogDetailsModal(item)
+			click: () => {
+				if (window.getSelection().toString()) return;
+				showLogDetailsModal(item);
+			}
 		}, [
 			E('td', { class: 'td col-time', style: 'font-size: 0.82rem; opacity: 0.7; white-space: nowrap;' }, formatTimestamp(item.timestamp)),
 			E('td', {
@@ -947,7 +973,7 @@ const renderLogsTable = logsData => {
 			pageParts[1] || ''
 		]);
 
-		return E('div', {}, [
+	const container = E('div', {}, [
 			E('table', { class: 'table cbi-section-table mosdns-table', style: 'margin-top: 0.25rem; margin-bottom: 0;' }, [
 				E('tr', { class: 'tr table-titles' }, [
 					E('th', { class: 'th col-time', style: 'width: 85px;' }, _('Time')),
@@ -990,6 +1016,30 @@ const renderLogsTable = logsData => {
 				])
 			])
 		]);
+	const handleKeyDown = (ev) => {
+		if (ev.target.matches('input, select, textarea')) return;
+		if (window._mosdnsLogLoading) return;
+		if (ev.key === 'ArrowLeft') {
+			if (pageIdx > 0) {
+				pageIdx--;
+				updateLiveStatusBadge();
+				refreshLogs();
+			}
+		}
+		else if (ev.key === 'ArrowRight') {
+			if ((pageIdx + 1) < totalPages) {
+				pageIdx++;
+				updateLiveStatusBadge();
+				refreshLogs();
+			}
+		}
+	};
+	if (window._mosdnsLogKeyHandler) {
+		window.removeEventListener('keydown', window._mosdnsLogKeyHandler);
+	}
+	window.addEventListener('keydown', handleKeyDown);
+	window._mosdnsLogKeyHandler = handleKeyDown;
+	return container;
 };
 
 const pollScheduler = async () => {
@@ -1023,6 +1073,7 @@ const pollScheduler = async () => {
 };
 
 const refreshLogs = async () => {
+	window._mosdnsLogLoading = true;
 	try {
 		const logs = await callGetLogs(PAGE_SIZE, pageIdx * PAGE_SIZE, searchVal, filterVal);
 		lastLogsJson = JSON.stringify(logs || {});
@@ -1030,6 +1081,8 @@ const refreshLogs = async () => {
 		updateLiveStatusBadge();
 	} catch (e) {
 		ui.addNotification(null, E('p', [_('Failed to update query logs: '), e.message]), 'error');
+	} finally {
+		window._mosdnsLogLoading = false;
 	}
 };
 
