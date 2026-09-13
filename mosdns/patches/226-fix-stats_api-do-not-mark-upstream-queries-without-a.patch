@@ -37,7 +37,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
  		}
  
 -		if (r.Rcode == dns.RcodeNameError || r.Rcode == dns.RcodeRefused) && qQuestion.Qtype != dns.TypeHTTPS {
-+		if !hasUpstream && (r.Rcode == dns.RcodeNameError || r.Rcode == dns.RcodeRefused) && qQuestion.Qtype != dns.TypeHTTPS {
++		if !hasUpstream && (len(r.Answer) == 0 || r.Rcode != dns.RcodeSuccess) {
  			isBlocked = true
  		}
  
