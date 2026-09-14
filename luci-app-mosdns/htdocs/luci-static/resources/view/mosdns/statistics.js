@@ -1140,7 +1140,7 @@ return view.extend({
 		const filterSelect = E('select', { class: 'cbi-input-select' }, [
 			E('option', { value: 'all', selected: filterVal === 'all' ? 'selected' : null }, _('All Queries')),
 			E('option', { value: 'blocked', selected: filterVal === 'blocked' ? 'selected' : null }, _('Blocked Only')),
-			E('option', { value: 'cached', selected: filterVal === 'cached' ? 'selected' : null }, _('Cached Only'))
+			E('option', { value: 'cached', selected: filterVal === 'cached' ? 'selected' : null }, _('Cached Only')),
 			E('option', { value: 'upstream', selected: filterVal === 'upstream' ? 'selected' : null }, _('Upstream Only'))
 		]);
 		filterSelect.addEventListener('change', () => {
