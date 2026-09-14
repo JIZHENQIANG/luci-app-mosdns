@@ -128,7 +128,7 @@ else
 fi
 
 msg_green "Downloading $PKG_URL ..."
-if ! curl --connect-timeout 5 -m 300 -kLo "$TEMP_DIR/$PKG_FILE" "$PKG_URL"; then
+if ! wget -T 30 -4 --no-check-certificate -O "$TEMP_DIR/$PKG_FILE" "$PKG_URL"; then
     msg_red "Download $PKG_FILE failed."
     exit 1
 fi

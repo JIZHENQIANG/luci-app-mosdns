@@ -58,6 +58,39 @@ function get_logfile_path_internal() {
 	}
 }
 
+function get_api_port_internal() {
+	let uci_cursor = cursor();
+	uci_cursor.load('mosdns');
+	let configfile = uci_cursor.get('mosdns', 'config', 'configfile');
+	let port = uci_cursor.get('mosdns', 'config', 'listen_port_api') || '9091';
+	if (configfile && configfile !== '/var/etc/mosdns.json') {
+		let f = require("fs").open(configfile, "r");
+		port = null;
+		if (f) {
+			port = "";
+			let found_api = false;
+			let line;
+			while ((line = f.read("line"))) {
+				if (match(line, /^api:/)) {
+					found_api = true;
+					continue;
+				}
+				if (found_api) {
+					if (match(line, /^[^ \t\r\n]/)) break;
+					let m_http = match(line, /http:\s*['"]?([^'" \t\r\n]+)/);
+					if (m_http) {
+						let address = m_http[1];
+						let parts = split(address, ":");
+						port = parts[length(parts) - 1];
+					}
+				}
+			}
+			f.close();
+		}
+	}
+	return port;
+}
+
 function parse_json_safe(str) {
 	if (!str || str == "")
 		return null;
@@ -71,9 +104,8 @@ function parse_json_safe(str) {
 
 function call_mosdns_api(endpoint, method) {
 	try {
-		let uci_cursor = cursor();
-		uci_cursor.load('mosdns');
-		let port = uci_cursor.get('mosdns', 'config', 'listen_port_api') || '9091';
+		let port = get_api_port_internal();
+		if (!port || port === "") return { error: "API listen port not configured." };
 		let http_method = method ? method : 'GET';
 		let post_flag = (http_method === 'POST') ? '--post-data=""' : '';
 		let cmd = `wget -q -O - ${post_flag} "http://127.0.0.1:${port}/plugins/stats_collector${endpoint}"`;
@@ -226,9 +258,8 @@ const methods = {
 	flush_cache: {
 		call: function() {
 			try {
-				let uci_cursor = cursor();
-				uci_cursor.load('mosdns');
-				let port = uci_cursor.get('mosdns', 'config', 'listen_port_api') || '9091';
+				let port = get_api_port_internal();
+				if (!port || port === "") return { error: "API listen port not configured." };
 				if (!port) return { error: "API listen port not configured." };
 
 				let res = exec_sys(`wget -q -O - "http://127.0.0.1:${port}/plugins/lazy_cache/flush"`);
