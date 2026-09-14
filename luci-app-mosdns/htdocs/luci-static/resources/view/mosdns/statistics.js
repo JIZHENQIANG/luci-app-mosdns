@@ -751,11 +751,11 @@ const promptAddRule = (rawDomain, actionType) => {
 const showLogDetailsModal = item => {
 	let statusBadge;
 	if (item.is_blocked) {
-		statusBadge = E('span', { class: 'mosdns-badge badge-danger mosdns-status-badge' }, 'BLOCKED');
+		statusBadge = E('span', { class: 'mosdns-badge badge-danger mosdns-status-badge' }, (item.status || 'NOERROR') === 'NOERROR' ? 'BLOCKED' : item.status);
 	} else if (item.is_cached) {
 		statusBadge = E('span', { class: 'mosdns-badge badge-teal mosdns-status-badge' }, 'CACHED');
-	} else if (item.status === 'NOERROR') {
-		statusBadge = E('span', { class: 'mosdns-badge badge-primary mosdns-status-badge' }, 'NOERROR');
+	} else if (item.is_upstream) {
+		statusBadge = E('span', { class: 'mosdns-badge badge-primary mosdns-status-badge' }, item.status || 'NOERROR');
 	} else {
 		statusBadge = E('span', { class: 'mosdns-badge badge-neutral mosdns-status-badge' }, item.status || 'NOERROR');
 	}
@@ -874,11 +874,11 @@ const renderLogsTable = logsData => {
 	const rows = items.map(item => {
 		let statusBadge;
 		if (item.is_blocked) {
-			statusBadge = E('span', { class: 'mosdns-badge badge-danger mosdns-status-badge' }, 'BLOCKED');
+			statusBadge = E('span', { class: 'mosdns-badge badge-danger mosdns-status-badge' }, (item.status || 'NOERROR') === 'NOERROR' ? 'BLOCKED' : item.status);
 		} else if (item.is_cached) {
 			statusBadge = E('span', { class: 'mosdns-badge badge-teal mosdns-status-badge' }, 'CACHED');
-		} else if (item.status === 'NOERROR') {
-			statusBadge = E('span', { class: 'mosdns-badge badge-primary mosdns-status-badge' }, 'NOERROR');
+		} else if (item.is_upstream) {
+			statusBadge = E('span', { class: 'mosdns-badge badge-primary mosdns-status-badge' }, item.status || 'NOERROR');
 		} else {
 			statusBadge = E('span', { class: 'mosdns-badge badge-neutral mosdns-status-badge' }, item.status || 'NOERROR');
 		}

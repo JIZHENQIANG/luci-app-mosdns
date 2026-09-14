@@ -94,7 +94,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
  	primFailed := make(chan struct{})
  	primDone := make(chan struct{})
 
-@@ -124,12 +125,19 @@
+@@ -124,12 +125,21 @@
  		}
 
  		r := qCtx.R()
@@ -103,7 +103,9 @@ Signed-off-by: sbwml <admin@cooluc.com>
 +		if r != nil {
 +			if r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused {
 +				isBadResponse = true
-+				f.logger.Warn("primary rejected service", qCtx.InfoField(), zap.Int("rcode", r.Rcode))
++				if qCtx.UpstreamSelected != nil {
++					f.logger.Warn("primary rejected service", qCtx.InfoField(), zap.Int("rcode", r.Rcode))
++				}
 +			}
 +		}
 +		if err != nil || r == nil || isBadResponse {
@@ -116,11 +118,11 @@ Signed-off-by: sbwml <admin@cooluc.com>
  		}
  	}()
 
-@@ -158,6 +166,11 @@
+@@ -158,6 +168,11 @@
  		}
 
  		r := qCtx.R()
-+		if r != nil {
++		if qCtx.UpstreamSelected != nil {
 +			if r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused {
 +				f.logger.Warn("secondary rejected service", qCtx.InfoField(), zap.Int("rcode", r.Rcode))
 +			}
@@ -128,7 +130,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
  		// always standby is enabled. Wait until secondary resp is needed.
  		if f.alwaysStandby && r != nil {
  			select {
-@@ -167,24 +180,39 @@ func (f *fallback) doFallback(ctx contex
+@@ -167,24 +182,51 @@ func (f *fallback) doFallback(ctx contex
  			case <-timer.C: // or timed out.
  			}
  		}
@@ -139,7 +141,8 @@ Signed-off-by: sbwml <admin@cooluc.com>
 +			respChan <- &fallbackResult{r: r, qCtx: qCtx}
 +		}
  	}()
- 
+
++	var tmpR *fallbackResult
  	for i := 0; i < 2; i++ {
  		select {
  		case <-ctx.Done():
@@ -147,15 +150,26 @@ Signed-off-by: sbwml <admin@cooluc.com>
 -		case r := <-respChan:
 -			if r == nil { // One of goroutines finished but failed.
 +		case res := <-respChan:
-+			if res == nil || res.r == nil || res.r.Rcode == dns.RcodeServerFailure || res.r.Rcode == dns.RcodeRefused { // One of goroutines finished but failed.
++			if res == nil || res.r == nil { // One of goroutines finished but failed.
  				continue
  			}
 -			qCtx.SetResponse(r)
++			if res.qCtx.UpstreamSelected != nil {
++				tmpR = res
++			}
++			if res.r.Rcode == dns.RcodeServerFailure || res.r.Rcode == dns.RcodeRefused {
++				continue
++			}
 +			qCtx.SetResponse(res.r)
 +			qCtx.CopyMetadataFrom(res.qCtx)
  			return nil
  		}
  	}
++	if tmpR != nil {
++		qCtx.SetResponse(tmpR.r)
++		qCtx.CopyMetadataFrom(tmpR.qCtx)
++		return nil
++	}
 
  	// All goroutines finished but failed.
 -	return ErrFailed
