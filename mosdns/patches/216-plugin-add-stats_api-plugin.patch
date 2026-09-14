@@ -6,7 +6,7 @@ Subject: [PATCH 1/5] plugin: add stats_api plugin
 Signed-off-by: sbwml <admin@cooluc.com>
 ---
  plugin/enabled_plugins.go                     |   1 +
- plugin/executable/stats_api/stats_api.go      | 726 ++++++++++++++++++
+ plugin/executable/stats_api/stats_api.go      | 731 ++++++++++++++++++
  plugin/executable/stats_api/stats_api_test.go | 265 +++++++
  3 files changed, 992 insertions(+)
  create mode 100644 plugin/executable/stats_api/stats_api.go
@@ -24,7 +24,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
  	// executable and matcher
 --- /dev/null
 +++ b/plugin/executable/stats_api/stats_api.go
-@@ -0,0 +1,726 @@
+@@ -0,0 +1,731 @@
 +/*
 + * Copyright (C) 2020-2026, IrineSistiana
 + *
@@ -103,6 +103,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
 +	Status    string      `json:"status"`
 +	IsBlocked bool        `json:"is_blocked"`
 +	IsCached  bool        `json:"is_cached"`
++	IsUpstream bool        `json:"is_upstream"`
 +	ElapsedMS float64     `json:"elapsed_ms"`
 +	Upstream  string      `json:"upstream,omitempty"`
 +	Rule      string      `json:"rule,omitempty"`
@@ -172,6 +173,9 @@ Signed-off-by: sbwml <admin@cooluc.com>
 +			continue
 +		}
 +		if filterLower == "cached" && !entry.IsCached {
++			continue
++		}
++		if filterLower == "upstream" && !entry.IsUpstream {
 +			continue
 +		}
 +
@@ -730,6 +734,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
 +		Status:    status,
 +		IsBlocked: isBlocked,
 +		IsCached:  isCached,
++		IsUpstream: hasUpstream && !isCached,
 +		ElapsedMS: elapsedMS,
 +		Upstream:  upstream,
 +		Rule:      rule,

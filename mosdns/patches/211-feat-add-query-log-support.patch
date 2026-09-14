@@ -49,7 +49,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
  	if lf := lc.File; len(lf) > 0 {
 --- a/pkg/query_context/context.go
 +++ b/pkg/query_context/context.go
-@@ -20,9 +20,11 @@
+@@ -20,9 +20,12 @@
  package query_context
  
  import (
@@ -58,10 +58,11 @@ Signed-off-by: sbwml <admin@cooluc.com>
  	"time"
  
 +	"github.com/IrineSistiana/mosdns/v5/mlog"
++	"github.com/IrineSistiana/mosdns/v5/pkg/dnsutils"
  	"github.com/IrineSistiana/mosdns/v5/pkg/server"
  	"github.com/miekg/dns"
  	"go.uber.org/zap"
-@@ -33,6 +35,26 @@ const (
+@@ -33,6 +36,26 @@ const (
  	edns0Size = 1200
  )
  
@@ -88,7 +89,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
  // Context is a query context that pass through plugins.
  // All Context funcs are not safe for concurrent use.
  type Context struct {
-@@ -49,11 +71,42 @@ type Context struct {
+@@ -49,11 +72,42 @@ type Context struct {
  	respOpt     *dns.OPT // nil if clientOpt == nil
  	upstreamOpt *dns.OPT // may be nil
  
@@ -131,7 +132,39 @@ Signed-off-by: sbwml <admin@cooluc.com>
  var contextUid atomic.Uint32
  
  type ServerMeta = server.QueryMeta
-@@ -237,17 +290,106 @@ func (ctx *Context) MarshalLogObject(enc
+@@ -125,12 +179,30 @@
+ // SetResponse sets m as response. It takes the ownership of m.
+ // If m is nil. It removes existing response.
+ func (ctx *Context) SetResponse(m *dns.Msg) {
+-	ctx.resp = m
+ 	if m == nil {
+ 		ctx.upstreamOpt = nil
+ 	} else {
+ 		ctx.upstreamOpt = popOpt(m)
++		if len(m.Answer) == 0 && len(m.Question) > 0 {
++			hasSOA := false
++			for i := len(m.Ns); i > 0; i-- {
++				rr := m.Ns[i-1]
++				if rr.Header().Rrtype == dns.TypeSOA {
++					hasSOA = true
++					break
++				}
++			}
++			if !hasSOA {
++				fqdn := m.Question[0].Name
++				if len(m.Ns) > 0 {
++					fqdn = m.Ns[0].Header().Name
++				}
++				fakeSOA := dnsutils.FakeSOA(fqdn)
++				m.Ns = append(m.Ns, fakeSOA)
++			}
++		}
+ 	}
++	ctx.resp = m
+ }
+
+ // R returns the response that will be sent to client. It might be nil.
+@@ -237,17 +309,106 @@ func (ctx *Context) MarshalLogObject(enc
  	encoder.AddUint32("uqid", ctx.id)
  
  	if clientAddr := ctx.ServerMeta.ClientAddr; clientAddr.IsValid() {
@@ -296,7 +329,40 @@ Signed-off-by: sbwml <admin@cooluc.com>
  			}
 --- a/pkg/server_handler/entry_handler.go
 +++ b/pkg/server_handler/entry_handler.go
-@@ -131,6 +131,11 @@ func (h *EntryHandler) Handle(ctx contex
+@@ -86,7 +86,32 @@
+ func (h *EntryHandler) Handle(ctx context.Context, q *dns.Msg, serverMeta server.QueryMeta, packMsgPayload func(m *dns.Msg) (*[]byte, error)) *[]byte {
+ 	// basic query check.
+ 	if q.Response || len(q.Question) != 1 || len(q.Answer)+len(q.Ns) > 0 || len(q.Extra) > 1 {
++		h.opts.Logger.Warn("dns message format err")
+ 		return nil
++	}
++	qt := q.Question[0].Qtype
++	qc := q.Question[0].Qclass
++	if qc != dns.ClassINET && qc != dns.ClassANY {
++		if qt != dns.TypeA {
++			h.opts.Logger.Warn(
++				"qclass err",
++				zap.String("qname", q.Question[0].Name),
++				zap.Uint16("qclass", qc),
++				zap.Uint16("qtype", qt),
++			)
++			return nil
++		}
++		q.Question[0].Qtype = qc
++		q.Question[0].Qclass = dns.ClassINET
++		if len(q.Extra) > 0 {
++			q.Extra = nil
++		}
++		h.opts.Logger.Warn(
++			"fixed malformed qclass cleared qextra",
++			zap.String("qname", q.Question[0].Name),
++			zap.Uint16("qclass", qc),
++			zap.Uint16("qtype", qt),
++		)
+ 	}
+
+ 	ddl := time.Now().Add(h.opts.QueryTimeout)
+@@ -131,6 +156,11 @@
  		h.opts.Logger.Error("internal err: failed to pack resp msg", qCtx.InfoField(), zap.Error(err))
  		return nil
  	}
@@ -307,7 +373,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
 +	}
  	return payload
  }
- 
+
 --- a/plugin/executable/cache/cache.go
 +++ b/plugin/executable/cache/cache.go
 @@ -204,6 +204,18 @@ func (c *Cache) Exec(ctx context.Context
@@ -331,23 +397,38 @@ Signed-off-by: sbwml <admin@cooluc.com>
  	err := next.ExecNext(ctx, qCtx)
 --- a/plugin/executable/forward/forward.go
 +++ b/plugin/executable/forward/forward.go
-@@ -104,6 +104,7 @@ type Forward struct {
+@@ -54,6 +54,7 @@
+ type Args struct {
+ 	Upstreams  []UpstreamConfig `yaml:"upstreams"`
+ 	Concurrent int              `yaml:"concurrent"`
++	Timeout    int              `yaml:"timeout"`
+
+ 	// Global options.
+ 	Socks5       string `yaml:"socks5"`
+@@ -104,6 +105,8 @@ type Forward struct {
  	logger       *zap.Logger
  	us           []*upstreamWrapper
  	tag2Upstream map[string]*upstreamWrapper // for fast tag lookup only.
 +	pluginTag    string
++	timeout      time.Duration
  }
  
  type Opts struct {
-@@ -125,6 +126,7 @@ func NewForward(args *Args, opt Opts) (*
+@@ -125,6 +128,13 @@ func NewForward(args *Args, opt Opts) (*
  		args:         args,
  		logger:       opt.Logger,
  		tag2Upstream: make(map[string]*upstreamWrapper),
 +		pluginTag:    opt.MetricsTag,
++	}
++
++	if args.Timeout > 0 {
++		f.timeout = time.Duration(args.Timeout) * time.Millisecond
++	} else {
++		f.timeout = queryTimeout
  	}
  
  	applyGlobal := func(c *UpstreamConfig) {
-@@ -256,6 +258,7 @@ func (f *Forward) exchange(ctx context.C
+@@ -256,6 +266,7 @@ func (f *Forward) exchange(ctx context.C
  	type res struct {
  		r   *dns.Msg
  		err error
@@ -355,7 +436,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
  	}
  
  	resChan := make(chan res)
-@@ -266,14 +269,14 @@ func (f *Forward) exchange(ctx context.C
+@@ -266,14 +277,14 @@ func (f *Forward) exchange(ctx context.C
  	for i := 0; i < concurrent; i++ {
  		u := us[(r+i)%len(us)]
  		qc := copyPayload(queryPayload)
@@ -363,7 +444,8 @@ Signed-off-by: sbwml <admin@cooluc.com>
 +		go func(uqid uint32, question dns.Question, chosenUpstream *upstreamWrapper) {
  			defer pool.ReleaseBuf(qc)
  			// Give each upstream a fixed timeout to finish the query.
- 			upstreamCtx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+-			upstreamCtx, cancel := context.WithTimeout(context.Background(), queryTimeout)
++			upstreamCtx, cancel := context.WithTimeout(context.Background(), f.timeout)
  			defer cancel()
  
  			var r *dns.Msg
@@ -372,7 +454,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
  			if err != nil {
  				f.logger.Warn(
  					"upstream error",
-@@ -281,7 +284,7 @@ func (f *Forward) exchange(ctx context.C
+@@ -281,7 +292,7 @@ func (f *Forward) exchange(ctx context.C
  					zap.String("qname", question.Name),
  					zap.Uint16("qclass", question.Qclass),
  					zap.Uint16("qtype", question.Qtype),
@@ -381,7 +463,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
  					zap.Error(err),
  				)
  			} else {
-@@ -293,16 +296,16 @@ func (f *Forward) exchange(ctx context.C
+@@ -293,16 +304,16 @@ func (f *Forward) exchange(ctx context.C
  				}
  			}
  			select {
@@ -401,7 +483,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
  			if err != nil {
  				continue
  			}
-@@ -311,6 +314,25 @@ func (f *Forward) exchange(ctx context.C
+@@ -311,12 +322,41 @@ func (f *Forward) exchange(ctx context.C
  			if i < concurrent-1 && r.Rcode != dns.RcodeSuccess && r.Rcode != dns.RcodeNameError {
  				continue
  			}
@@ -427,6 +509,23 @@ Signed-off-by: sbwml <admin@cooluc.com>
  			return r, nil
  		case <-ctx.Done():
  			return nil, context.Cause(ctx)
+ 		}
+ 	}
+-	return nil, errors.New("all upstream servers failed")
++	f.logger.Warn(
++		"all upstream servers failed",
++		zap.Uint32("uqid", qCtx.Id()),
++		zap.String("qname", qCtx.QQuestion().Name),
++		zap.Uint16("qclass", qCtx.QQuestion().Qclass),
++		zap.Uint16("qtype", qCtx.QQuestion().Qtype),
++		zap.Duration("qtime_limit", f.timeout),
++	)
++	sfMsg := new(dns.Msg)
++	sfMsg.SetRcode(qCtx.Q(), dns.RcodeServerFailure)
++	return sfMsg, nil
+ }
+
+ func quickSetup(bq sequence.BQ, s string) (any, error) {
 --- a/plugin/executable/sequence/built_in.go
 +++ b/plugin/executable/sequence/built_in.go
 @@ -83,11 +83,13 @@ func setupReturn(_ BQ, _ string) (any, e

@@ -1,0 +1,65 @@
+Subject: [PATCH]
+---
+diff --git a/pkg/dnsutils/msg.go b/pkg/dnsutils/msg.go
+--- a/pkg/dnsutils/msg.go
++++ b/pkg/dnsutils/msg.go
+@@ -152,9 +152,9 @@
+ 		Ns:      "fake-ns.mosdns.fake.root.",
+ 		Mbox:    "fake-mbox.mosdns.fake.root.",
+ 		Serial:  2021110400,
+-		Refresh: 1800,
++		Refresh: 7200,
+ 		Retry:   900,
+-		Expire:  604800,
+-		Minttl:  86400,
++		Expire:  1209600,
++		Minttl:  300,
+ 	}
+ }
+diff --git a/pkg/upstream/upstream.go b/pkg/upstream/upstream.go
+--- a/pkg/upstream/upstream.go
++++ b/pkg/upstream/upstream.go
+@@ -364,6 +364,10 @@
+ 		if err != nil {
+ 			return nil, fmt.Errorf("failed to init tcp dialer, %w", err)
+ 		}
++		idleTimeout := opt.IdleTimeout
++		if idleTimeout <= 0 {
++			idleTimeout = time.Second * 10
++		}
+ 
+ 		dialNetConn := func(ctx context.Context) (transport.NetConn, error) {
+ 			conn, err := tcpDialer(ctx)
+@@ -382,7 +386,7 @@
+ 		if opt.EnablePipeline {
+ 			to := transport.TraditionalDnsConnOpts{
+ 				WithLengthHeader:   true,
+-				IdleTimeout:        opt.IdleTimeout,
++				IdleTimeout:        idleTimeout,
+ 				MaxConcurrentQuery: pipelineConcurrentLimit,
+ 			}
+ 			dialDnsConn := func(ctx context.Context) (transport.DnsConn, error) {
+@@ -398,7 +402,7 @@
+ 				Logger:                         opt.Logger,
+ 			}), nil
+ 		}
+-		return transport.NewReuseConnTransport(transport.ReuseConnOpts{DialContext: dialNetConn}), nil
++		return transport.NewReuseConnTransport(transport.ReuseConnOpts{DialContext: dialNetConn, IdleTimeout: idleTimeout}), nil
+ 	case "https":
+ 		const defaultPort = 443
+ 
+diff --git a/pkg/concurrent_map/map.go b/pkg/concurrent_map/map.go
+--- a/pkg/concurrent_map/map.go
++++ b/pkg/concurrent_map/map.go
+@@ -51,7 +51,10 @@
+ // the actual maximum size is MapShardSize*(size / MapShardSize).
+ // If size <=0, it's equal to NewMap().
+ func NewMapCache[K Hashable, V any](size int) *Map[K, V] {
+-	sizePreShard := size / MapShardSize
++	sizePreShard := 1
++	if size > MapShardSize {
++		sizePreShard = size / MapShardSize
++	}
+ 	m := new(Map[K, V])
+ 	for i := range m.shards {
+ 		m.shards[i] = newShard[K, V](sizePreShard)

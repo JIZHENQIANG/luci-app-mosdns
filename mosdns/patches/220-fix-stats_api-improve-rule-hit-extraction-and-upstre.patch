@@ -29,7 +29,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
  			return r, nil
 --- a/plugin/executable/stats_api/stats_api.go
 +++ b/plugin/executable/stats_api/stats_api.go
-@@ -970,10 +970,20 @@ func (s *StatsAPI) Exec(ctx context.Cont
+@@ -970,11 +970,23 @@ func (s *StatsAPI) Exec(ctx context.Cont
  	if isCached {
  		upstream = "cache"
  	} else if u := qCtx.UpstreamSelected; u != nil {
@@ -54,6 +54,9 @@ Signed-off-by: sbwml <admin@cooluc.com>
  		} else if u.Tag != "" {
  			upstream = u.Tag
  		}
++	} else {
++		upstream = "127.0.0.1"
+ 	}
 @@ -981,20 +991,44 @@ func (s *StatsAPI) Exec(ctx context.Cont
  
  	// Extract Rule information

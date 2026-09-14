@@ -69,7 +69,17 @@ Signed-off-by: sbwml <admin@cooluc.com>
  func (ctx *Context) StoreValue(k uint32, v any) {
 --- a/plugin/executable/sequence/fallback/fallback.go
 +++ b/plugin/executable/sequence/fallback/fallback.go
-@@ -107,8 +107,13 @@ func (f *fallback) Exec(ctx context.Cont
+@@ -97,18 +97,19 @@
+ 	return s, nil
+ }
+
+-var (
+-	ErrFailed = errors.New("no valid response from both primary and secondary")
+-)
+-
+ var _ sequence.Executable = (*fallback)(nil)
+
+ func (f *fallback) Exec(ctx context.Context, qCtx *query_context.Context) error {
  	return f.doFallback(ctx, qCtx)
  }
  
@@ -83,8 +93,21 @@ Signed-off-by: sbwml <admin@cooluc.com>
 +	respChan := make(chan *fallbackResult, 2) // resp could be nil.
  	primFailed := make(chan struct{})
  	primDone := make(chan struct{})
- 
-@@ -129,7 +134,7 @@ func (f *fallback) doFallback(ctx contex
+
+@@ -124,12 +125,19 @@
+ 		}
+
+ 		r := qCtx.R()
+-		if err != nil || r == nil {
++		isBadResponse := false
++		if r != nil {
++			if r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused {
++				isBadResponse = true
++				f.logger.Warn("primary rejected service", qCtx.InfoField(), zap.Int("rcode", r.Rcode))
++			}
++		}
++		if err != nil || r == nil || isBadResponse {
+ 			close(primFailed)
  			respChan <- nil
  		} else {
  			close(primDone)
@@ -92,8 +115,20 @@ Signed-off-by: sbwml <admin@cooluc.com>
 +			respChan <- &fallbackResult{r: r, qCtx: qCtx}
  		}
  	}()
- 
-@@ -167,18 +172,23 @@ func (f *fallback) doFallback(ctx contex
+
+@@ -158,6 +166,11 @@
+ 		}
+
+ 		r := qCtx.R()
++		if r != nil {
++			if r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused {
++				f.logger.Warn("secondary rejected service", qCtx.InfoField(), zap.Int("rcode", r.Rcode))
++			}
++		}
+ 		// always standby is enabled. Wait until secondary resp is needed.
+ 		if f.alwaysStandby && r != nil {
+ 			select {
+@@ -167,24 +180,39 @@ func (f *fallback) doFallback(ctx contex
  			case <-timer.C: // or timed out.
  			}
  		}
@@ -112,7 +147,7 @@ Signed-off-by: sbwml <admin@cooluc.com>
 -		case r := <-respChan:
 -			if r == nil { // One of goroutines finished but failed.
 +		case res := <-respChan:
-+			if res == nil || res.r == nil { // One of goroutines finished but failed.
++			if res == nil || res.r == nil || res.r.Rcode == dns.RcodeServerFailure || res.r.Rcode == dns.RcodeRefused { // One of goroutines finished but failed.
  				continue
  			}
 -			qCtx.SetResponse(r)
@@ -121,3 +156,20 @@ Signed-off-by: sbwml <admin@cooluc.com>
  			return nil
  		}
  	}
+
+ 	// All goroutines finished but failed.
+-	return ErrFailed
++	f.logger.Warn(
++		"no valid response from both primary and secondary",
++		zap.Uint32("uqid", qCtx.Id()),
++		zap.String("qname", qCtx.QQuestion().Name),
++		zap.Uint16("qclass", qCtx.QQuestion().Qclass),
++		zap.Uint16("qtype", qCtx.QQuestion().Qtype),
++	)
++	sfMsg := new(dns.Msg)
++	sfMsg.SetRcode(qCtx.Q(), dns.RcodeServerFailure)
++	qCtx.SetResponse(sfMsg)
++	return nil
+ }
+
+ func makeDdlCtx(ctx context.Context, timeout time.Duration) (context.Context, func()) {
