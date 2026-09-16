@@ -6,9 +6,9 @@ process_data() {
         if (NF >= 4) { name=$4; ip=$3; }
         split(ip, arr, ".");
         ptr_name = arr[4]"."arr[3]"."arr[2]"."arr[1]".in-addr.arpa.";
-        print name". 60 IN A "ip;
-        print name".lan. 60 IN A "ip;
-        print ptr_name" 60 IN PTR "name".lan.";
+        print name". 10 IN A "ip;
+        print name".lan. 10 IN A "ip;
+        print ptr_name" 10 IN PTR "name".lan.";
     }' 2>/dev/null
 }
 [ -d "/tmp/hosts" ] && cat /tmp/hosts/* 2>/dev/null | process_data > /tmp/mosdns/mosdns_hosts.txt
