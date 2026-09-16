@@ -445,6 +445,7 @@ function v2dat_dump() {
 			writefile('/var/mosdns/geosite_hulu.txt', '');
 		}
 	} else {
+		writefile('/var/mosdns/mosdns_hosts.txt', '');
 		let geoip_tags = to_array(uci_cursor.get('mosdns', 'config', 'geoip_tags'));
 		if (length(geoip_tags) > 0) {
 			let tags_str = "-e '" + join("' -e '", geoip_tags) + "'";
