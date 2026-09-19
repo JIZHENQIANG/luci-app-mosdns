@@ -329,25 +329,16 @@ Signed-off-by: sbwml <admin@cooluc.com>
  			}
 --- a/pkg/server_handler/entry_handler.go
 +++ b/pkg/server_handler/entry_handler.go
-@@ -86,7 +86,32 @@
+@@ -86,8 +86,24 @@
  func (h *EntryHandler) Handle(ctx context.Context, q *dns.Msg, serverMeta server.QueryMeta, packMsgPayload func(m *dns.Msg) (*[]byte, error)) *[]byte {
  	// basic query check.
  	if q.Response || len(q.Question) != 1 || len(q.Answer)+len(q.Ns) > 0 || len(q.Extra) > 1 {
 +		h.opts.Logger.Warn("dns message format err")
  		return nil
-+	}
+ 	}
 +	qt := q.Question[0].Qtype
 +	qc := q.Question[0].Qclass
-+	if qc != dns.ClassINET && qc != dns.ClassANY {
-+		if qt != dns.TypeA {
-+			h.opts.Logger.Warn(
-+				"qclass err",
-+				zap.String("qname", q.Question[0].Name),
-+				zap.Uint16("qclass", qc),
-+				zap.Uint16("qtype", qt),
-+			)
-+			return nil
-+		}
++	if qc != dns.ClassINET && qt == dns.TypeA {
 +		q.Question[0].Qtype = qc
 +		q.Question[0].Qclass = dns.ClassINET
 +		if len(q.Extra) > 0 {
@@ -359,10 +350,11 @@ Signed-off-by: sbwml <admin@cooluc.com>
 +			zap.Uint16("qclass", qc),
 +			zap.Uint16("qtype", qt),
 +		)
- 	}
++	}
 
  	ddl := time.Now().Add(h.opts.QueryTimeout)
-@@ -131,6 +156,11 @@
+ 	ctx, cancel := context.WithDeadline(ctx, ddl)
+@@ -131,6 +147,11 @@
  		h.opts.Logger.Error("internal err: failed to pack resp msg", qCtx.InfoField(), zap.Error(err))
  		return nil
  	}
