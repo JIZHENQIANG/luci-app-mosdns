@@ -168,6 +168,9 @@ msgstr ""
 msgid "Blocked Only"
 msgstr ""
 
+msgid "Upstream Only"
+msgstr ""
+
 #: luci-app-mosdns/htdocs/luci-static/resources/view/mosdns/statistics.js:466
 msgid "Blocked by Filters"
 msgstr ""
