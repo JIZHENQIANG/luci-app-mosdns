@@ -1,0 +1,108 @@
+#!/bin/sh
+mkdir -p /tmp/mosdns
+LOCK_DIR="/tmp/mosdns_dhcp_hotplug.lock"
+FLAG_FILE="/tmp/mosdns_dhcp_need_run.flag"
+touch "$FLAG_FILE"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+	exit 0
+fi
+(
+	while [ -f "$FLAG_FILE" ]; do
+		rm -f "$FLAG_FILE"
+		sleep 5
+	done
+	rmdir "$LOCK_DIR" 2>/dev/null
+	{
+		{
+			cat /tmp/hosts/dhcp.* 2>/dev/null
+			[ -f "/tmp/dhcp.leases" ] && cat /tmp/dhcp.leases
+		} | awk '
+		!/^#/ && NF {
+			name=$2; ip=$1;
+			if (NF >= 4) { name=$4; ip=$3; }
+			split(ip, arr, ".");
+			ptr_name = arr[4]"."arr[3]"."arr[2]"."arr[1]".in-addr.arpa.";
+			print name". 10 IN A "ip;
+			print name".lan. 10 IN A "ip;
+			print ptr_name" 10 IN PTR "name".lan.";
+		}' 2>/dev/null
+		{
+			localhost=$(uci get system.@system[0].hostname 2>/dev/null || echo "OpenWrt")
+			ip -6 addr show dev br-lan 2>/dev/null | grep 'inet6' | grep -v -E '::1/128|scope host' | awk '{print $2}' | cut -d'/' -f1 | while read -r ip; do
+				echo "$ip $localhost"
+			done
+			if [ -f "/tmp/odhcpd.leases" ]; then
+				while read -r line; do
+					echo "$line" | grep -q -E '^#|^$' && continue
+					host=$(echo "$line" | awk '{print $4}')
+					ips=$(echo "$line" | awk '{for(i=5;i<=NF;i++) printf $i" "}')
+					for ip in $ips; do
+						echo "$ip $host"
+					done
+				done < /tmp/odhcpd.leases
+			fi
+			CACHE_FILE="/tmp/mosdns/mosdns_ipv6_names.txt"
+			touch $CACHE_FILE 2>/dev/null
+			EXPIRE_TIME=86400
+			NOW=$(date +%s)
+			INC_TMP=$(mktemp)
+			ip -6 neigh show 2>/dev/null | grep -v 'FAILED' | while read -r line; do
+				v6_ip=$(echo "$line" | awk '{print $1}')
+				mac=$(echo "$line" | grep -oE 'lladdr [0-9a-fA-F:]{17}' | awk '{print $2}' | tr 'A-F' 'a-f')
+
+				[ -z "$mac" ] && continue
+
+				hostname=""
+				if [ -f "/tmp/dhcp.leases" ]; then
+					hostname=$(grep -i "$mac" /tmp/dhcp.leases | awk '{print $4}')
+				fi
+
+				[ -z "$hostname" ] && hostname="MAC-$(echo "$mac" | tr -d ':')"
+				echo "$v6_ip $hostname"
+				dev_name=$(echo "$line" | awk '{ for (i=1; i<NF; i++) { if ($i == "dev") print $(i+1); } }')
+
+				luci_ip="$v6_ip"
+				if echo "$luci_ip" | grep -qi "^fe80" && [ ! -z "$dev_name" ]; then
+					luci_ip="${luci_ip}%${dev_name}"
+				fi
+				echo "$luci_ip $hostname $NOW" >> "$INC_TMP"
+			done
+			TMP_CACHE=$(mktemp)
+			cat $CACHE_FILE "$INC_TMP" 2>/dev/null | awk -v n="$NOW" -v e="$EXPIRE_TIME" '
+				BEGIN{n+=0;e+=0} {ts=$NF+0; if(NF>=3 && $1~/^[0-9a-fA-F:]+(%[^ ]+)?$/ && (ts+e)>n) lines[$1]=$0} END{for(ip in lines) print lines[ip]}
+			' > $TMP_CACHE
+			mv $TMP_CACHE $CACHE_FILE 2>/dev/null
+			rm -f "$INC_TMP" 2>/dev/null
+		} | awk '
+		!/^#/ && NF==2 {
+			ip=$1; name=$2;
+			gsub(/\.$/, "", name);
+			if (seen[ip]++) next;
+			delete full; delete blocks;
+			print name". 10 IN AAAA "ip;
+			print name".lan. 10 IN AAAA "ip;
+			n = split(ip, blocks, ":");
+			empty_idx = -1;
+			for (i=1; i<=n; i++) { if (blocks[i] == "") { empty_idx = i; break; } }
+			k = 0;
+			for (i=1; i<=n; i++) {
+				if (i == empty_idx) {
+					missing = 8 - (n - 1);
+					for (j=1; j<=missing; j++) full[++k] = "0000";
+				} else {
+					val = sprintf("%04s", blocks[i]);
+					gsub(/ /, "0", val);
+					full[++k] = val;
+				}
+			}
+			hex_str = "";
+			for (i=1; i<=8; i++) hex_str = hex_str full[i];
+			ptr_name = "";
+			for (i=length(hex_str); i>=1; i--) {
+				char = tolower(substr(hex_str, i, 1));
+				ptr_name = ptr_name char ".";
+			}
+			print ptr_name"ip6.arpa. 10 IN PTR "name".lan.";
+		}'
+	} > /tmp/mosdns/mosdns_hosts.txt
+) &
