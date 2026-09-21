@@ -185,6 +185,9 @@ msgstr "PTR 黑名单"
 msgid "Blocked Only"
 msgstr "仅拦截"
 
+msgid "Upstream Only"
+msgstr "仅上游"
+
 #: luci-app-mosdns/htdocs/luci-static/resources/view/mosdns/statistics.js:466
 msgid "Blocked by Filters"
 msgstr "拦截总数"
