@@ -204,7 +204,8 @@ generate_config() {
 	json_add_string "type" "adblock_set"
 	json_add_object "args"
 	json_add_array "files"
-	adlist=$($MOSDNS_SCRIPT get_adlist)
+	local adlist=$($MOSDNS_SCRIPT get_adlist)
+	local list
 	[ -z "$adlist" ] && adlist="/var/mosdns/disable-ads.txt" # fail-safe
 	for list in $adlist; do
 		json_add_string "" "$list"
@@ -289,7 +290,8 @@ generate_config() {
 	json_add_object "args"
 	json_add_int "concurrent" "$concurrent"
 	json_add_array "upstreams"
-	local_dns=$($MOSDNS_SCRIPT interface_dns)
+	local local_dns=$($MOSDNS_SCRIPT interface_dns)
+	local enable_http3 addr
 	[ -z "$local_dns" ] && local_dns="119.29.29.29 223.5.5.5" # fail-safe
 	for addr in $local_dns; do
 		enable_http3=0
@@ -763,18 +765,18 @@ dhcp_setting() {
 
 	if [ "${CONF}" = "/var/etc/mosdns.json" ]; then
 		sed -i "/list server/d" /etc/config/dhcp
-		uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#$listen_port"
-		uci set dhcp.@dnsmasq[0].rebind_protection='0'
-		uci set dhcp.@dnsmasq[0].noresolv="1"
-		uci set dhcp.@dnsmasq[0].cachesize='0'
-		uci commit dhcp
+		uci -q add_list dhcp.@dnsmasq[0].server="127.0.0.1#$listen_port"
+		uci -q set dhcp.@dnsmasq[0].rebind_protection='0'
+		uci -q set dhcp.@dnsmasq[0].noresolv="1"
+		uci -q set dhcp.@dnsmasq[0].cachesize='0'
+		uci -q commit dhcp
 	else
 		sed -i "/list server/d" /etc/config/dhcp
-		uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#$(awk -F'[:" ]+' '/^\s+listen:/{for(i=1;i<=NF;i++){if($i~/^[0-9]+$/){print $i;exit}}}' $CONF)"
-		uci set dhcp.@dnsmasq[0].rebind_protection='0'
-		uci set dhcp.@dnsmasq[0].noresolv="1"
-		uci set dhcp.@dnsmasq[0].cachesize='0'
-		uci commit dhcp
+		uci -q add_list dhcp.@dnsmasq[0].server="127.0.0.1#$(awk -F'[:" ]+' '/^\s+listen:/{for(i=1;i<=NF;i++){if($i~/^[0-9]+$/){print $i;exit}}}' $CONF)"
+		uci -q set dhcp.@dnsmasq[0].rebind_protection='0'
+		uci -q set dhcp.@dnsmasq[0].noresolv="1"
+		uci -q set dhcp.@dnsmasq[0].cachesize='0'
+		uci -q commit dhcp
 	fi
 }
 
@@ -783,9 +785,9 @@ uci_set_or_del() {
 	local val="$2"
 
 	if [ -n "$val" ]; then
-		uci set "$key=$val"
+		uci -q set "$key=$val"
 	else
-		uci del "$key"
+		uci -q del "$key"
 	fi
 }
 
@@ -800,7 +802,7 @@ restore_dhcp_setting() {
 		uci_set_or_del dhcp.@dnsmasq[0].noresolv "$noresolv"
 		uci_set_or_del dhcp.@dnsmasq[0].cachesize "$cachesize"
 
-		uci commit dhcp
+		uci -q commit dhcp
 		rm -f "$REDIRECT_LOCK_FILE"
 	fi
 }
@@ -816,14 +818,14 @@ reload_service() {
 }
 
 setcron() {
-	sed -i '/mosdns.uc/d' $CRON_FILE 2>/dev/null
+	[ -f "$CRON_FILE" ] && sed -i '/mosdns.uc/d' $CRON_FILE 2>/dev/null
 	[ "$geo_auto_update" -eq 1 ] && echo "0 $geo_update_day_time * * $geo_update_week_time /usr/share/mosdns/mosdns.uc update" >> $CRON_FILE
-	crontab $CRON_FILE
+	[ -f "$CRON_FILE" ] && crontab $CRON_FILE
 }
 
 delcron() {
-	sed -i '/mosdns.uc/d' $CRON_FILE 2>/dev/null
-	crontab $CRON_FILE
+	[ -f "$CRON_FILE" ] && sed -i '/mosdns.uc/d' $CRON_FILE 2>/dev/null
+	[ -f "$CRON_FILE" ] && crontab $CRON_FILE
 }
 
 start_service() {
@@ -862,7 +864,7 @@ start_service() {
 	fi
 
 	# Update Adlist
-	update_list=0
+	local update_list=0
 	if [ "$adblock" -eq 1 ]; then
 		if [ -f "/etc/mosdns/rule/.ad_source" ]; then
 			for url in $ad_source; do
