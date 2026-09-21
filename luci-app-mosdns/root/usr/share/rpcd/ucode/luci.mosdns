@@ -58,6 +58,39 @@ function get_logfile_path_internal() {
 	}
 }
 
+function get_api_port_internal() {
+	let uci_cursor = cursor();
+	uci_cursor.load('mosdns');
+	let configfile = uci_cursor.get('mosdns', 'config', 'configfile');
+	let port = uci_cursor.get('mosdns', 'config', 'listen_port_api') || '9091';
+	if (configfile && configfile !== '/var/etc/mosdns.json') {
+		let f = require("fs").open(configfile, "r");
+		port = null;
+		if (f) {
+			port = "";
+			let found_api = false;
+			let line;
+			while ((line = f.read("line"))) {
+				if (match(line, /^api:/)) {
+					found_api = true;
+					continue;
+				}
+				if (found_api) {
+					if (match(line, /^[^ \t\r\n]/)) break;
+					let m_http = match(line, /http:\s*['"]?([^'" \t\r\n]+)/);
+					if (m_http) {
+						let address = m_http[1];
+						let parts = split(address, ":");
+						port = parts[length(parts) - 1];
+					}
+				}
+			}
+			f.close();
+		}
+	}
+	return port;
+}
+
 function parse_json_safe(str) {
 	if (!str || str == "")
 		return null;
@@ -71,9 +104,8 @@ function parse_json_safe(str) {
 
 function call_mosdns_api(endpoint, method) {
 	try {
-		let uci_cursor = cursor();
-		uci_cursor.load('mosdns');
-		let port = uci_cursor.get('mosdns', 'config', 'listen_port_api') || '9091';
+		let port = get_api_port_internal();
+		if (!port || port === "") return { error: "API listen port not configured." };
 		let http_method = method ? method : 'GET';
 		let post_flag = (http_method === 'POST') ? '--post-data=""' : '';
 		let cmd = `wget -q -O - ${post_flag} "http://127.0.0.1:${port}/plugins/stats_collector${endpoint}"`;
@@ -170,6 +202,30 @@ function get_client_leases() {
 
 	parse_hosts_file('/etc/hosts');
 
+	try {
+		let addr_pipe = exec_sys(`ip addr show 2>/dev/null | grep -E 'inet|inet6' | awk '{print $2}' | cut -d'/' -f1`);
+		if (addr_pipe.code === 0 && addr_pipe.stdout != "") {
+			let local_ips = split(addr_pipe.stdout, '\n');
+			for (let i = 0; i < length(local_ips); i++) {
+				let local_ip = replace(local_ips[i], /^\s+|\s+$/g, '');
+				if (local_ip != "") {
+					add_lease(local_ip, "localhost");
+				}
+			}
+		}
+		let neigh_cache = exec_sys(`cat /tmp/mosdns/mosdns_ipv6_names.txt 2>/dev/null`);
+		if (neigh_cache.code === 0 && neigh_cache.stdout != "") {
+			let n_lines = split(neigh_cache.stdout, '\n');
+			for (let i = 0; i < length(n_lines); i++) {
+				let n_line = replace(n_lines[i], /^\s+|\s+$/g, '');
+				if (n_line == "") continue;
+				let parts = split(n_line, /[ \t]+/);
+				if (length(parts) >= 2) {
+					add_lease(parts[0], parts[1]);
+				}
+			}
+		}
+	} catch (e) {}
 	return leases;
 }
 
@@ -226,9 +282,8 @@ const methods = {
 	flush_cache: {
 		call: function() {
 			try {
-				let uci_cursor = cursor();
-				uci_cursor.load('mosdns');
-				let port = uci_cursor.get('mosdns', 'config', 'listen_port_api') || '9091';
+				let port = get_api_port_internal();
+				if (!port || port === "") return { error: "API listen port not configured." };
 				if (!port) return { error: "API listen port not configured." };
 
 				let res = exec_sys(`wget -q -O - "http://127.0.0.1:${port}/plugins/lazy_cache/flush"`);
