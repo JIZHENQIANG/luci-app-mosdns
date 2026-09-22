@@ -1,0 +1,62 @@
+Subject: [PATCH] 304-add-forward-timeout-param-and-optimize
+---
+diff --git a/plugin/executable/forward/forward.go b/plugin/executable/forward/forward.go
+--- a/plugin/executable/forward/forward.go
++++ b/plugin/executable/forward/forward.go
+@@ -54,6 +54,7 @@
+ type Args struct {
+ 	Upstreams  []UpstreamConfig `yaml:"upstreams"`
+ 	Concurrent int              `yaml:"concurrent"`
++	Timeout    int              `yaml:"timeout"`
+ 
+ 	// Global options.
+ 	Socks5       string `yaml:"socks5"`
+@@ -105,6 +106,7 @@
+ 	us           []*upstreamWrapper
+ 	tag2Upstream map[string]*upstreamWrapper // for fast tag lookup only.
+ 	pluginTag    string
++	timeout      time.Duration
+ }
+ 
+ type Opts struct {
+@@ -129,6 +131,12 @@
+ 		pluginTag:    opt.MetricsTag,
+ 	}
+ 
++	if args.Timeout > 0 {
++		f.timeout = time.Duration(args.Timeout) * time.Millisecond
++	} else {
++		f.timeout = queryTimeout
++	}
++
+ 	applyGlobal := func(c *UpstreamConfig) {
+ 		utils.SetDefaultString(&c.Socks5, args.Socks5)
+ 		utils.SetDefaultUnsignNum(&c.SoMark, args.SoMark)
+@@ -274,7 +282,7 @@
+ 		go func(uqid uint32, question dns.Question, chosenUpstream *upstreamWrapper) {
+ 			defer pool.ReleaseBuf(qc)
+ 			// Give each upstream a fixed timeout to finish the query.
+-			upstreamCtx, cancel := context.WithTimeout(context.Background(), queryTimeout)
++			upstreamCtx, cancel := context.WithTimeout(context.Background(), f.timeout)
+ 			defer cancel()
+ 
+ 			var r *dns.Msg
+@@ -340,7 +348,17 @@
+ 			return nil, context.Cause(ctx)
+ 		}
+ 	}
+-	return nil, errors.New("all upstream servers failed")
++	f.logger.Warn(
++		"all upstream servers failed",
++		zap.Uint32("uqid", qCtx.Id()),
++		zap.String("qname", qCtx.QQuestion().Name),
++		zap.Uint16("qclass", qCtx.QQuestion().Qclass),
++		zap.Uint16("qtype", qCtx.QQuestion().Qtype),
++		zap.Duration("qtime_limit", f.timeout),
++	)
++	sfMsg := new(dns.Msg)
++	sfMsg.SetRcode(qCtx.Q(), dns.RcodeServerFailure)
++	return sfMsg, nil
+ }
+ 
+ func quickSetup(bq sequence.BQ, s string) (any, error) {
