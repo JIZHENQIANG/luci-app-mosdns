@@ -1,0 +1,165 @@
+Subject: [PATCH] 300-fix-cache-limit-concurrent-upstream-and-optimize
+---
+diff --git a/plugin/executable/cache/cache.go b/plugin/executable/cache/cache.go
+--- a/plugin/executable/cache/cache.go
++++ b/plugin/executable/cache/cache.go
+@@ -34,6 +34,7 @@
+ 
+ 	"github.com/IrineSistiana/mosdns/v5/coremain"
+ 	"github.com/IrineSistiana/mosdns/v5/pkg/cache"
++	"github.com/IrineSistiana/mosdns/v5/pkg/concurrent_map"
+ 	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
+ 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+ 	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
+@@ -106,6 +107,7 @@
+ 	prefetchFailTotal prometheus.Counter
+ 	capturedNext      atomic.Pointer[sequence.ChainWalker]
+ 	captureOnce       sync.Once
++	keyLocks          *concurrent_map.Map[key, chan struct{}]
+ }
+ 
+ func Init(bp *coremain.BP, args any) (any, error) {
+@@ -156,6 +158,7 @@
+ 		logger:      logger,
+ 		backend:     backend,
+ 		closeNotify: make(chan struct{}),
++		keyLocks:    concurrent_map.NewMap[key, chan struct{}](),
+ 
+ 		queryTotal: prometheus.NewCounter(prometheus.CounterOpts{
+ 			Name:        "query_total",
+@@ -231,55 +234,103 @@
+ 		c.doLazyUpdate(msgKey, qCtx, next)
+ 	}
+ 	if cachedResp != nil { // cache hit
+-		c.hitTotal.Inc()
+-		cachedResp.Id = q.Id // change msg id
+-		qCtx.SetResponse(cachedResp)
+-		qCtx.FromHosts = false
+-		qCtx.FromArbitrary = false
+-		if v, _, ok := c.backend.Get(key(msgKey)); ok && v != nil {
+-			v.hitCount.Add(1)
+-			ttl := int(v.expirationTime.Sub(v.storedTime).Seconds())
+-			remainingTtl := int(v.expirationTime.Sub(time.Now()).Seconds())
+-			if remainingTtl < 0 {
+-				remainingTtl = 0
+-			}
+-			qCtx.SetCacheState(true, lazyHit, ttl, remainingTtl)
+-		} else {
+-			qCtx.SetCacheState(true, lazyHit, 0, 0)
+-		}
+-	} else {
+-		qCtx.SetCacheState(false, false, 0, 0)
++		c.onCacheHit(cachedResp, q, qCtx, msgKey, lazyHit)
++		return next.ExecNext(ctx, qCtx)
++	}
++	return c.execNextWithKeyLimit(ctx, qCtx, next, msgKey, q)
++}
++
++func (c *Cache) execNextWithKeyLimit(ctx context.Context, qCtx *query_context.Context, next sequence.ChainWalker, msgKey string, q *dns.Msg) error {
++	var ch chan struct{}
++	c.keyLocks.TestAndSet(key(msgKey), func(v chan struct{}, ok bool) (newV chan struct{}, setV, delV bool) {
++		if ok {
++			ch = v
++			return nil, false, false
++		}
++		ch = make(chan struct{}, 1)
++		return ch, true, false
++	})
++	var acquired bool
++	defer func() {
++		if acquired {
++			<-ch
++		}
++		if len(ch) == 0 {
++			c.keyLocks.TestAndSet(key(msgKey), func(v chan struct{}, ok bool) (newV chan struct{}, setV, delV bool) {
++				if ok && len(v) == 0 {
++					return nil, false, true
++				}
++				return nil, false, false
++			})
++		}
++	}()
++	select {
++	case ch <- struct{}{}:
++		acquired = true
++	case <-ctx.Done():
++		return context.Cause(ctx)
++	}
++	doubleCachedResp, _ := getRespFromCache(msgKey, c.backend, c.args.LazyCacheTTL > 0, expiredMsgTtl)
++	if doubleCachedResp != nil {
++		c.onCacheHit(doubleCachedResp, q, qCtx, msgKey, false)
++		return next.ExecNext(ctx, qCtx)
++	}
++	qCtx.SetCacheState(false, false, 0, 0)
++	err := next.ExecNext(ctx, qCtx)
++	if r := qCtx.R(); r != nil {
++		saveRespToCache(msgKey, r, c.backend, c.args.LazyCacheTTL)
++		c.updatedKey.Add(1)
++	}
++	return err
++}
++
++func (c *Cache) onCacheHit(cachedResp *dns.Msg, q *dns.Msg, qCtx *query_context.Context, msgKey string, lazyHit bool) {
++	c.hitTotal.Inc()
++	cachedResp.Id = q.Id // change msg id
++	qCtx.SetResponse(cachedResp)
++	qCtx.FromHosts = false
++	qCtx.FromArbitrary = false
++	if v, _, ok := c.backend.Get(key(msgKey)); ok && v != nil {
++		v.hitCount.Add(1)
++		ttl := int(v.expirationTime.Sub(v.storedTime).Seconds())
++		remainingTtl := int(v.expirationTime.Sub(time.Now()).Seconds())
++		if remainingTtl < 0 {
++			remainingTtl = 0
++		}
++		qCtx.SetCacheState(true, lazyHit, ttl, remainingTtl)
++	} else {
++		qCtx.SetCacheState(true, lazyHit, 0, 0)
+ 	}
+-
+-	err := next.ExecNext(ctx, qCtx)
+-
+-	if r := qCtx.R(); r != nil && cachedResp != r { // pointer compare. r is not cachedResp
+-		saveRespToCache(msgKey, r, c.backend, c.args.LazyCacheTTL)
+-		c.updatedKey.Add(1)
+-	}
+-	return err
+ }
+ 
+ // doLazyUpdate starts a new goroutine to execute next node and update the cache in the background.
+ // It has an inner singleflight.Group to de-duplicate same msgKey.
+ func (c *Cache) doLazyUpdate(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker) {
+-	qCtxCopy := qCtx.Copy()
++	q := qCtx.QQuestion()
++	serverMeta := qCtx.ServerMeta
+ 	lazyUpdateFunc := func() (any, error) {
+-		c.logger.Debug("start lazy cache update", qCtxCopy.InfoField())
++		req := new(dns.Msg)
++		req.Id = dns.Id()
++		req.RecursionDesired = true
++		req.Question = make([]dns.Question, 1)
++		req.Question[0] = q
++		newQCtx := query_context.NewContext(req)
++		newQCtx.ServerMeta = serverMeta
++		c.logger.Debug("start lazy cache update", newQCtx.InfoField())
+ 		ctx, cancel := context.WithTimeout(context.Background(), defaultLazyUpdateTimeout)
+ 		defer cancel()
+ 
+-		err := next.ExecNext(ctx, qCtxCopy)
++		err := next.ExecNext(ctx, newQCtx)
+ 		if err != nil {
+-			c.logger.Warn("failed to update lazy cache", qCtxCopy.InfoField(), zap.Error(err))
++			c.logger.Warn("failed to update lazy cache", newQCtx.InfoField(), zap.Error(err))
+ 		}
+ 
+-		r := qCtxCopy.R()
++		r := newQCtx.R()
+ 		if r != nil {
+ 			saveRespToCache(msgKey, r, c.backend, c.args.LazyCacheTTL)
+ 			c.updatedKey.Add(1)
+ 		}
+-		c.logger.Debug("lazy cache updated", qCtxCopy.InfoField())
++		c.logger.Debug("lazy cache updated", newQCtx.InfoField())
+ 		return nil, nil
+ 	}
+ 	c.lazyUpdateSF.DoChan("lazy:"+msgKey, lazyUpdateFunc) // DoChan won't block this goroutine
