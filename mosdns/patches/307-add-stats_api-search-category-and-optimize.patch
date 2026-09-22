@@ -1,0 +1,95 @@
+Subject: [PATCH] 307-add-stats_api-search-category-and-optimize
+---
+diff --git a/plugin/executable/stats_api/stats_api.go b/plugin/executable/stats_api/stats_api.go
+--- a/plugin/executable/stats_api/stats_api.go
++++ b/plugin/executable/stats_api/stats_api.go
+@@ -78,18 +78,19 @@
+ }
+ 
+ type LogEntry struct {
+-	ID        string      `json:"id"`
+-	Timestamp string      `json:"timestamp"`
+-	ClientIP  string      `json:"client_ip"`
+-	Domain    string      `json:"domain"`
+-	QType     string      `json:"qtype"`
+-	Status    string      `json:"status"`
+-	IsBlocked bool        `json:"is_blocked"`
+-	IsCached  bool        `json:"is_cached"`
+-	ElapsedMS float64     `json:"elapsed_ms"`
+-	Upstream  string      `json:"upstream,omitempty"`
+-	Rule      string      `json:"rule,omitempty"`
+-	Answers   []AnswerDTO `json:"answers"`
++	ID         string      `json:"id"`
++	Timestamp  string      `json:"timestamp"`
++	ClientIP   string      `json:"client_ip"`
++	Domain     string      `json:"domain"`
++	QType      string      `json:"qtype"`
++	Status     string      `json:"status"`
++	IsBlocked  bool        `json:"is_blocked"`
++	IsCached   bool        `json:"is_cached"`
++	IsUpstream bool        `json:"is_upstream"`
++	ElapsedMS  float64     `json:"elapsed_ms"`
++	Upstream   string      `json:"upstream,omitempty"`
++	Rule       string      `json:"rule,omitempty"`
++	Answers    []AnswerDTO `json:"answers"`
+ }
+ 
+ type RingBuffer struct {
+@@ -157,6 +158,9 @@
+ 		if filterLower == "cached" && !entry.IsCached {
+ 			continue
+ 		}
++		if filterLower == "upstream" && !entry.IsUpstream {
++			continue
++		}
+ 
+ 		if searchLower != "" {
+ 			if !strings.Contains(strings.ToLower(entry.Domain), searchLower) &&
+@@ -994,7 +998,7 @@
+ 			status = fmt.Sprintf("RCODE%d", r.Rcode)
+ 		}
+ 
+-		if !hasUpstream && (r.Rcode == dns.RcodeNameError || r.Rcode == dns.RcodeRefused) && qQuestion.Qtype != dns.TypeHTTPS {
++		if !hasUpstream && (len(r.Answer) == 0 || r.Rcode != dns.RcodeSuccess) {
+ 			isBlocked = true
+ 		}
+ 
+@@ -1075,6 +1079,8 @@
+ 		} else if u.Tag != "" {
+ 			upstream = u.Tag
+ 		}
++	} else {
++		upstream = "127.0.0.1"
+ 	}
+ 
+ 	// Extract Rule information
+@@ -1129,17 +1135,18 @@
+ 	elapsedMS := math.Round(float64(elapsed.Microseconds())/10.0) / 100.0
+ 
+ 	entry := LogEntry{
+-		Timestamp: start.Format(time.RFC3339),
+-		ClientIP:  clientIP,
+-		Domain:    domain,
+-		QType:     qtypeStr,
+-		Status:    status,
+-		IsBlocked: isBlocked,
+-		IsCached:  isCached,
+-		ElapsedMS: elapsedMS,
+-		Upstream:  upstream,
+-		Rule:      rule,
+-		Answers:   answers,
++		Timestamp:  start.Format(time.RFC3339),
++		ClientIP:   clientIP,
++		Domain:     domain,
++		QType:      qtypeStr,
++		Status:     status,
++		IsBlocked:  isBlocked,
++		IsCached:   isCached,
++		IsUpstream: hasUpstream && !isCached,
++		ElapsedMS:  elapsedMS,
++		Upstream:   upstream,
++		Rule:       rule,
++		Answers:    answers,
+ 	}
+ 
+ 	s.ringBuffer.Push(entry)
