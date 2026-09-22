@@ -1,0 +1,70 @@
+Subject: [PATCH] 301-add-virtual-SOA-empty-NS
+---
+diff --git a/pkg/dnsutils/msg.go b/pkg/dnsutils/msg.go
+--- a/pkg/dnsutils/msg.go
++++ b/pkg/dnsutils/msg.go
+@@ -83,7 +83,7 @@
+ 			if ttl := hdr.Ttl; ttl > delta {
+ 				hdr.Ttl = ttl - delta
+ 			} else {
+-				hdr.Ttl = 1
++				hdr.Ttl = 0
+ 				overflowed = true
+ 			}
+ 		}
+@@ -152,9 +152,9 @@
+ 		Ns:      "fake-ns.mosdns.fake.root.",
+ 		Mbox:    "fake-mbox.mosdns.fake.root.",
+ 		Serial:  2021110400,
+-		Refresh: 1800,
++		Refresh: 7200,
+ 		Retry:   900,
+-		Expire:  604800,
+-		Minttl:  86400,
++		Expire:  1209600,
++		Minttl:  300,
+ 	}
+ }
+diff --git a/pkg/query_context/context.go b/pkg/query_context/context.go
+--- a/pkg/query_context/context.go
++++ b/pkg/query_context/context.go
+@@ -25,6 +25,7 @@
+ 	"time"
+ 
+ 	"github.com/IrineSistiana/mosdns/v5/mlog"
++	"github.com/IrineSistiana/mosdns/v5/pkg/dnsutils"
+ 	"github.com/IrineSistiana/mosdns/v5/pkg/server"
+ 	"github.com/miekg/dns"
+ 	"go.uber.org/zap"
+@@ -190,12 +191,30 @@
+ // SetResponse sets m as response. It takes the ownership of m.
+ // If m is nil. It removes existing response.
+ func (ctx *Context) SetResponse(m *dns.Msg) {
+-	ctx.resp = m
+ 	if m == nil {
+ 		ctx.upstreamOpt = nil
+ 	} else {
+ 		ctx.upstreamOpt = popOpt(m)
++		if len(m.Answer) == 0 && len(m.Question) > 0 {
++			hasSOA := false
++			for i := len(m.Ns); i > 0; i-- {
++				rr := m.Ns[i-1]
++				if rr.Header().Rrtype == dns.TypeSOA {
++					hasSOA = true
++					break
++				}
++			}
++			if !hasSOA {
++				fqdn := m.Question[0].Name
++				if len(m.Ns) > 0 {
++					fqdn = m.Ns[0].Header().Name
++				}
++				fakeSOA := dnsutils.FakeSOA(fqdn)
++				m.Ns = append(m.Ns, fakeSOA)
++			}
++		}
+ 	}
++	ctx.resp = m
+ }
+ 
+ // R returns the response that will be sent to client. It might be nil.
