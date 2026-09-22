@@ -1,0 +1,82 @@
+Subject: [PATCH] 305-fix-log-timezone
+---
+diff --git a/mlog/logger.go b/mlog/logger.go
+--- a/mlog/logger.go
++++ b/mlog/logger.go
+@@ -21,11 +21,11 @@
+ 
+ import (
+ 	"fmt"
+-	"os"
+-	"time"
+-
+ 	"go.uber.org/zap"
+ 	"go.uber.org/zap/zapcore"
++	"os"
++	"time"
++	_ "time/tzdata"
+ )
+ 
+ type LogConfig struct {
+@@ -51,8 +51,22 @@
+ var (
+ 	stderr = zapcore.Lock(os.Stderr)
+ 	lvl    = zap.NewAtomicLevelAt(zap.InfoLevel)
+-	l      = zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig()), stderr, lvl))
+-	s      = l.Sugar()
++	l      = func() *zap.Logger {
++		config := zap.NewDevelopmentEncoderConfig()
++		config.EncodeTime = func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
++			loc := time.Local
++			if loc.String() == "Local" || loc.String() == "UTC" {
++				if lo, err := time.LoadLocation("Asia/Shanghai"); err == nil {
++					loc = lo
++				} else {
++					loc = time.FixedZone("CST", 8*3600)
++				}
++			}
++			enc.AppendString(t.In(loc).Format("2006-01-02 15:04:05"))
++		}
++		return zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(config), stderr, lvl))
++	}()
++	s = l.Sugar()
+ 
+ 	nop = zap.NewNop()
+ 
+@@ -93,18 +107,25 @@
+ 		out = stderr
+ 	}
+ 
+-	encoderConfig := zap.NewDevelopmentEncoderConfig()
+-	encoderConfig.EncodeTime = func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+-		enc.AppendString(t.Format("2006-01-02 15:04:05"))
++	loc := time.Local
++	if loc.String() == "Local" || loc.String() == "UTC" {
++		if l, err := time.LoadLocation("Asia/Shanghai"); err == nil {
++			loc = l
++		} else {
++			loc = time.FixedZone("CST", 8*3600)
++		}
+ 	}
+-
+-	core := zapcore.NewCore(
+-		zapcore.NewConsoleEncoder(encoderConfig),
+-		out,
+-		lvl,
+-	)
+-
+-	return zap.New(core), nil
++	timeEncoder := func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
++		enc.AppendString(t.In(loc).Format("2006-01-02 15:04:05"))
++	}
++	if lc.Production {
++		config := zap.NewProductionEncoderConfig()
++		config.EncodeTime = timeEncoder
++		return zap.New(zapcore.NewCore(zapcore.NewJSONEncoder(config), out, lvl)), nil
++	}
++	config := zap.NewDevelopmentEncoderConfig()
++	config.EncodeTime = timeEncoder
++	return zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(config), out, lvl)), nil
+ }
+ 
+ // L is a global logger.
