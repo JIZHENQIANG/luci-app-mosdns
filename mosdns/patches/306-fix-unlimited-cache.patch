@@ -1,0 +1,17 @@
+Subject: [PATCH] 306-fix-unlimited-cache
+---
+diff --git a/pkg/concurrent_map/map.go b/pkg/concurrent_map/map.go
+--- a/pkg/concurrent_map/map.go
++++ b/pkg/concurrent_map/map.go
+@@ -51,7 +51,10 @@
+ // the actual maximum size is MapShardSize*(size / MapShardSize).
+ // If size <=0, it's equal to NewMap().
+ func NewMapCache[K Hashable, V any](size int) *Map[K, V] {
+-	sizePreShard := size / MapShardSize
++	sizePreShard := 1
++	if size > MapShardSize {
++		sizePreShard = size / MapShardSize
++	}
+ 	m := new(Map[K, V])
+ 	for i := range m.shards {
+ 		m.shards[i] = newShard[K, V](sizePreShard)
