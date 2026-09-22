@@ -1,0 +1,92 @@
+Subject: [PATCH] 303-fix-fallback-and-optimize
+---
+diff --git a/plugin/executable/sequence/fallback/fallback.go b/plugin/executable/sequence/fallback/fallback.go
+--- a/plugin/executable/sequence/fallback/fallback.go
++++ b/plugin/executable/sequence/fallback/fallback.go
+@@ -97,10 +97,6 @@
+ 	return s, nil
+ }
+ 
+-var (
+-	ErrFailed = errors.New("no valid response from both primary and secondary")
+-)
+-
+ var _ sequence.Executable = (*fallback)(nil)
+ 
+ func (f *fallback) Exec(ctx context.Context, qCtx *query_context.Context) error {
+@@ -129,7 +125,16 @@
+ 		}
+ 
+ 		r := qCtx.R()
+-		if err != nil || r == nil {
++		isBadResponse := false
++		if r != nil {
++			if r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused {
++				isBadResponse = true
++				if qCtx.UpstreamSelected != nil {
++					f.logger.Warn("primary rejected service", qCtx.InfoField(), zap.Int("rcode", r.Rcode))
++				}
++			}
++		}
++		if err != nil || r == nil || isBadResponse {
+ 			close(primFailed)
+ 			respChan <- nil
+ 		} else {
+@@ -163,6 +168,11 @@
+ 		}
+ 
+ 		r := qCtx.R()
++		if qCtx.UpstreamSelected != nil {
++			if r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused {
++				f.logger.Warn("secondary rejected service", qCtx.InfoField(), zap.Int("rcode", r.Rcode))
++			}
++		}
+ 		// always standby is enabled. Wait until secondary resp is needed.
+ 		if f.alwaysStandby && r != nil {
+ 			select {
+@@ -179,6 +189,7 @@
+ 		}
+ 	}()
+ 
++	var tmpR *fallbackResult
+ 	for i := 0; i < 2; i++ {
+ 		select {
+ 		case <-ctx.Done():
+@@ -186,15 +197,36 @@
+ 		case res := <-respChan:
+ 			if res == nil || res.r == nil { // One of goroutines finished but failed.
+ 				continue
++			}
++			if res.qCtx.UpstreamSelected != nil {
++				tmpR = res
++			}
++			if res.r.Rcode == dns.RcodeServerFailure || res.r.Rcode == dns.RcodeRefused {
++				continue
+ 			}
+ 			qCtx.SetResponse(res.r)
+ 			qCtx.CopyMetadataFrom(res.qCtx)
+ 			return nil
+ 		}
+ 	}
++	if tmpR != nil {
++		qCtx.SetResponse(tmpR.r)
++		qCtx.CopyMetadataFrom(tmpR.qCtx)
++		return nil
++	}
+ 
+ 	// All goroutines finished but failed.
+-	return ErrFailed
++	f.logger.Warn(
++		"no valid response from both primary and secondary",
++		zap.Uint32("uqid", qCtx.Id()),
++		zap.String("qname", qCtx.QQuestion().Name),
++		zap.Uint16("qclass", qCtx.QQuestion().Qclass),
++		zap.Uint16("qtype", qCtx.QQuestion().Qtype),
++	)
++	sfMsg := new(dns.Msg)
++	sfMsg.SetRcode(qCtx.Q(), dns.RcodeServerFailure)
++	qCtx.SetResponse(sfMsg)
++	return nil
+ }
+ 
+ func makeDdlCtx(ctx context.Context, timeout time.Duration) (context.Context, func()) {
