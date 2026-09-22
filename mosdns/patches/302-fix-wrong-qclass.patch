@@ -1,0 +1,30 @@
+Subject: [PATCH] 302-fix-wrong-qclass
+---
+diff --git a/pkg/server_handler/entry_handler.go b/pkg/server_handler/entry_handler.go
+--- a/pkg/server_handler/entry_handler.go
++++ b/pkg/server_handler/entry_handler.go
+@@ -86,8 +86,24 @@
+ func (h *EntryHandler) Handle(ctx context.Context, q *dns.Msg, serverMeta server.QueryMeta, packMsgPayload func(m *dns.Msg) (*[]byte, error)) *[]byte {
+ 	// basic query check.
+ 	if q.Response || len(q.Question) != 1 || len(q.Answer)+len(q.Ns) > 0 || len(q.Extra) > 1 {
++		h.opts.Logger.Warn("dns message format err")
+ 		return nil
+ 	}
++	qt := q.Question[0].Qtype
++	qc := q.Question[0].Qclass
++	if qc != dns.ClassINET && qt == dns.TypeA {
++		q.Question[0].Qtype = qc
++		q.Question[0].Qclass = dns.ClassINET
++		if len(q.Extra) > 0 {
++			q.Extra = nil
++		}
++		h.opts.Logger.Warn(
++			"fixed malformed qclass cleared qextra",
++			zap.String("qname", q.Question[0].Name),
++			zap.Uint16("qclass", qc),
++			zap.Uint16("qtype", qt),
++		)
++	}
+ 
+ 	ddl := time.Now().Add(h.opts.QueryTimeout)
+ 	ctx, cancel := context.WithDeadline(ctx, ddl)
