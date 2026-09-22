@@ -1,0 +1,17 @@
+Subject: [PATCH] 309-fix-0-TTL-lock-step-delay-accumulation-and-optimize
+---
+diff --git a/plugin/executable/cache/utils.go b/plugin/executable/cache/utils.go
+--- a/plugin/executable/cache/utils.go
++++ b/plugin/executable/cache/utils.go
+@@ -194,8 +194,9 @@
+ 			}
+ 		}
+ 	}
+-	if msgTtl <= 0 || cacheTtl <= 0 {
+-		return false
++	if msgTtl <= 0 {
++		msgTtl = time.Millisecond * 100
++		cacheTtl = msgTtl
+ 	}
+ 
+ 	now := time.Now()
